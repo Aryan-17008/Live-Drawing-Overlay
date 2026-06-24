@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Drawing Overlay</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Permission Screen -->
+        <div id="permission-screen" class="screen active">
+            <div class="permission-card">
+                <div class="camera-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                        <circle cx="12" cy="13" r="4"/>
+                    </svg>
+                </div>
+                <h1>Live Drawing Overlay</h1>
+                <p>Allow camera access to start drawing on your live video feed.</p>
+                <button id="start-btn" class="btn-primary">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+                        <polygon points="5 3 19 12 5 21 5 3"/>
+                    </svg>
+                    Start Camera
+                </button>
+                <p id="permission-error" class="error-message hidden"></p>
+            </div>
+        </div>
+
+        <!-- Drawing Interface -->
+        <div id="drawing-interface" class="screen">
+            <div class="video-container">
+                <video id="webcam" autoplay playsinline crossorigin="anonymous"></video>
+                <canvas id="drawing-canvas"></canvas>
+            </div>
+
+            <!-- Floating Toolbar -->
+            <div class="toolbar">
+                <!-- Color Picker -->
+                <div class="tool-group">
+                    <label class="tool-label">Color</label>
+                    <div class="color-picker-wrapper">
+                        <input type="color" id="color-picker" value="#00ff88">
+                        <div class="color-preview" id="color-preview"></div>
+                    </div>
+                </div>
+
+                <div class="tool-divider"></div>
+
+                <!-- Brush Size -->
+                <div class="tool-group">
+                    <label class="tool-label">Size</label>
+                    <div class="size-control">
+                        <input type="range" id="brush-size" min="1" max="50" value="5">
+                        <span id="size-value">5</span>
+                    </div>
+                </div>
+
+                <div class="tool-divider"></div>
+
+                <!-- Eraser Toggle + Size -->
+                <div class="tool-group">
+                    <label class="tool-label">Eraser</label>
+                    <button id="eraser-btn" class="tool-btn" title="Toggle Eraser (E)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 20H7L3 16C2 15 2 13 3 12L13 2L22 11L20 20Z"/>
+                            <path d="M17 17L7 7"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="tool-divider"></div>
+
+                <!-- Eraser Size -->
+                <div class="tool-group" id="eraser-size-group" style="display: none;">
+                    <label class="tool-label">E-Size</label>
+                    <div class="size-control">
+                        <input type="range" id="eraser-size" min="5" max="100" value="20">
+                        <span id="eraser-size-value">20</span>
+                    </div>
+                </div>
+
+                <div class="tool-divider" id="eraser-divider" style="display: none;"></div>
+
+                <div class="tool-divider"></div>
+
+                <!-- Hand Mode Toggle -->
+                <div class="tool-group">
+                    <label class="tool-label">Hand</label>
+                    <button id="hand-mode-btn" class="tool-btn" title="Toggle Hand Tracking (H)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/>
+                            <path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/>
+                            <path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/>
+                            <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.5-5.5-1.5S6 18.5 6 16"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="tool-divider"></div>
+
+                <!-- Actions -->
+                <div class="tool-group actions">
+                    <button id="undo-btn" class="tool-btn" title="Undo (Ctrl+Z)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="1 4 1 10 7 10"/>
+                            <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                        </svg>
+                    </button>
+                    <button id="clear-btn" class="tool-btn" title="Clear Canvas (C)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                    <button id="save-btn" class="tool-btn" title="Save Drawing (S)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                            <polyline points="17 21 17 13 7 13 7 21"/>
+                            <polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                    </button>
+                    <button id="fullscreen-btn" class="tool-btn" title="Fullscreen (F)">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Hand Tracking Feedback -->
+            <div id="hand-feedback" class="hand-feedback hidden">
+                <div class="hand-cursor" id="hand-cursor"></div>
+                <div class="pinch-indicator" id="pinch-indicator"></div>
+            </div>
+
+            <!-- Hand Tracking Loading -->
+            <div id="hand-loading" class="hand-loading hidden">
+                <div class="loading-spinner"></div>
+                <span>Loading hand tracking...</span>
+            </div>
+
+            <!-- Status Indicator -->
+            <div class="status-indicator">
+                <div class="recording-dot"></div>
+                <span>Live</span>
+            </div>
+
+            <!-- Gesture Feedback -->
+            <div id="gesture-feedback" class="gesture-feedback hidden">
+                <span id="gesture-text">Gesture</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="script.js?v=4"></script>
+</body>
+</html>
