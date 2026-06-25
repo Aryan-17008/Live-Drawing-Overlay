@@ -1,0 +1,13 @@
+{
+  "name": "live-drawing-overlay",
+  "version": "1.0.0",
+  "description": "Draw on your live camera feed with hand gestures and multiplayer support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}

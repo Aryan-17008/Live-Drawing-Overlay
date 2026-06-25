@@ -13,6 +13,9 @@
     const canvas  = document.getElementById('drawing-canvas');
     const ctx     = canvas.getContext('2d', { willReadFrequently: true });
 
+    // Expose context to multiplayer module
+    window.drawingCtx = ctx;
+
     const colorPicker   = document.getElementById('color-picker');
     const colorPreview  = document.getElementById('color-preview');
     const brushSize     = document.getElementById('brush-size');
@@ -24,6 +27,7 @@
     const clearBtn      = document.getElementById('clear-btn');
     const saveBtn       = document.getElementById('save-btn');
     const fullscreenBtn = document.getElementById('fullscreen-btn');
+    const smoothingBtn = document.getElementById('smoothing-btn');
 
     const eraserSizeGroup = document.getElementById('eraser-size-group');
     const eraserDivider = document.getElementById('eraser-divider');
@@ -33,6 +37,17 @@
     const handCursor    = document.getElementById('hand-cursor');
     const pinchIndicator = document.getElementById('pinch-indicator');
     const handLoading   = document.getElementById('hand-loading');
+
+    // Plain canvas mode elements
+    const videoContainer = document.getElementById('video-container');
+    const plainCanvasContainer = document.getElementById('plain-canvas-container');
+    const plainCanvas = document.getElementById('plain-canvas');
+    const plainCtx = plainCanvas ? plainCanvas.getContext('2d', { willReadFrequently: true }) : null;
+    const plainCanvasBtn = document.getElementById('plain-canvas-btn');
+    const bgColorPicker = document.getElementById('bg-color-picker');
+    const bgColorPreview = document.getElementById('bg-color-preview');
+    const bgColorGroup = document.getElementById('bg-color-group');
+    const bgColorDivider = document.getElementById('bg-color-divider');
 
     // ============================================================
     // STATE
@@ -53,6 +68,12 @@
     let handModeActive = false;
     let hands          = null;
     let handRafId      = null;
+
+    // Plain canvas mode state
+    let isPlainCanvasMode = false;
+    let plainCanvasBgColor = '#ffffff';
+    let activeCtx = ctx; // Current drawing context (ctx or plainCtx)
+    let activeCanvas = canvas; // Current canvas element
     let handX          = 0;
     let handY          = 0;
     let isPinching     = false;
@@ -86,7 +107,7 @@
     // COORDINATE MAPPING
     // ============================================================
     function getCoords(e) {
-        const rect = canvas.getBoundingClientRect();
+        const rect = activeCanvas.getBoundingClientRect();
         const clientX = e.clientX ?? (e.touches && e.touches[0].clientX);
         const clientY = e.clientY ?? (e.touches && e.touches[0].clientY);
         return {
@@ -100,38 +121,125 @@
     // ============================================================
     function pushUndo() {
         if (undoStack.length >= MAX_UNDO) undoStack.shift();
-        undoStack.push(ctx.getImageData(0, 0, canvas.width, canvas.height));
+        undoStack.push(activeCtx.getImageData(0, 0, activeCanvas.width, activeCanvas.height));
     }
 
     function undo() {
         if (undoStack.length === 0) return;
         const data = undoStack.pop();
-        ctx.putImageData(data, 0, 0);
+        activeCtx.putImageData(data, 0, 0);
     }
 
     // ============================================================
     // DRAWING
     // ============================================================
+    // ============================================================
+    // DRAWING WITH SMOOTHING
+    // ============================================================
+    let drawPoints = []; // Store points for smoothing
+    let smoothingEnabled = true;
+
     function startDrawing(x, y) {
         isDrawing = true;
         lastX = x;
         lastY = y;
+        drawPoints = [{x, y}]; // Reset points
         pushUndo();
     }
 
     function draw(x, y) {
         if (!isDrawing) return;
+        
+        // Use active context (video canvas or plain canvas)
+        const ctx = activeCtx;
+
+        if (!smoothingEnabled) {
+            // Simple line drawing without smoothing
+            ctx.beginPath();
+            ctx.moveTo(lastX, lastY);
+            ctx.lineTo(x, y);
+
+            if (isEraser) {
+                ctx.globalCompositeOperation = 'destination-out';
+                ctx.lineWidth = eraserSize;
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = 'rgba(255, 255, 255, 0.3)';
+            } else {
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.strokeStyle = currentColor;
+                ctx.lineWidth = currentSize;
+            }
+
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+
+            // Broadcast to peers
+            if (window.multiplayer && window.multiplayer.isConnected()) {
+                window.multiplayer.broadcast({
+                    type: 'stroke',
+                    fromX: lastX,
+                    fromY: lastY,
+                    toX: x,
+                    toY: y,
+                    color: currentColor,
+                    size: currentSize,
+                    isEraser: isEraser,
+                    eraserSize: eraserSize
+                });
+            }
+
+            lastX = x;
+            lastY = y;
+            return;
+        }
+
+        // Add point to history for smoothing
+        drawPoints.push({x, y});
+
+        // Need at least 2 points to draw
+        if (drawPoints.length < 2) return;
 
         ctx.beginPath();
-        ctx.moveTo(lastX, lastY);
-        ctx.lineTo(x, y);
+
+        if (drawPoints.length === 2) {
+            // First segment: just draw a line
+            ctx.moveTo(drawPoints[0].x, drawPoints[0].y);
+            ctx.lineTo(drawPoints[1].x, drawPoints[1].y);
+        } else {
+            // Use quadratic curves for smoothing
+            // Move to the first point
+            ctx.moveTo(drawPoints[0].x, drawPoints[0].y);
+
+            // Draw quadratic curves through midpoints
+            for (let i = 1; i < drawPoints.length - 1; i++) {
+                const p0 = drawPoints[i - 1];
+                const p1 = drawPoints[i];
+                const p2 = drawPoints[i + 1];
+
+                // Calculate midpoint between p0 and p1
+                const midX = (p0.x + p1.x) / 2;
+                const midY = (p0.y + p1.y) / 2;
+
+                // Draw quadratic curve to midpoint of p1 and p2
+                const endX = (p1.x + p2.x) / 2;
+                const endY = (p1.y + p2.y) / 2;
+
+                ctx.quadraticCurveTo(p1.x, p1.y, endX, endY);
+            }
+
+            // Draw final segment to last point
+            const last = drawPoints[drawPoints.length - 1];
+            const secondLast = drawPoints[drawPoints.length - 2];
+            const midX = (secondLast.x + last.x) / 2;
+            const midY = (secondLast.y + last.y) / 2;
+            ctx.lineTo(last.x, last.y);
+        }
 
         if (isEraser) {
-            // Eraser uses destination-out to remove pixels completely (transparent)
             ctx.globalCompositeOperation = 'destination-out';
-            ctx.strokeStyle = 'rgba(0,0,0,1)';
             ctx.lineWidth = eraserSize;
-            // Add subtle shadow to make eraser visible
             ctx.shadowBlur = 10;
             ctx.shadowColor = 'rgba(255, 255, 255, 0.3)';
         } else {
@@ -140,12 +248,32 @@
             ctx.lineWidth = currentSize;
         }
 
-        ctx.lineCap     = 'round';
-        ctx.lineJoin    = 'round';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         ctx.stroke();
 
         // Reset shadow
         ctx.shadowBlur = 0;
+
+        // Broadcast to peers
+        if (window.multiplayer && window.multiplayer.isConnected()) {
+            window.multiplayer.broadcast({
+                type: 'stroke',
+                fromX: lastX,
+                fromY: lastY,
+                toX: x,
+                toY: y,
+                color: currentColor,
+                size: currentSize,
+                isEraser: isEraser,
+                eraserSize: eraserSize
+            });
+        }
+
+        // Keep last points for continuity but limit history
+        if (drawPoints.length > 3) {
+            drawPoints = drawPoints.slice(-2);
+        }
 
         lastX = x;
         lastY = y;
@@ -153,10 +281,16 @@
 
     function stopDrawing() {
         isDrawing = false;
+        drawPoints = [];
     }
 
     // ============================================================
-    // HAND TRACKING
+    // SMOOTHING TOGGLE
+    // ============================================================
+    function toggleSmoothing() {
+        smoothingEnabled = !smoothingEnabled;
+        if (smoothingBtn) smoothingBtn.classList.toggle('active', smoothingEnabled);
+    }
     // ============================================================
     function initHandTracking() {
         if (hands) return Promise.resolve();
@@ -437,6 +571,17 @@
         canvas.addEventListener('touchstart',  onTouchStart, { passive: false });
         canvas.addEventListener('touchmove',   onTouchMove,  { passive: false });
         canvas.addEventListener('touchend',    stopDrawing);
+        
+        // Add listeners to plain canvas too
+        if (plainCanvas) {
+            plainCanvas.addEventListener('mousedown', onMouseDown);
+            plainCanvas.addEventListener('mousemove', onMouseMove);
+            plainCanvas.addEventListener('mouseup',   stopDrawing);
+            plainCanvas.addEventListener('mouseout',    stopDrawing);
+            plainCanvas.addEventListener('touchstart',  onTouchStart, { passive: false });
+            plainCanvas.addEventListener('touchmove',   onTouchMove,  { passive: false });
+            plainCanvas.addEventListener('touchend',    stopDrawing);
+        }
     }
 
     function removeDrawingListeners() {
@@ -447,6 +592,17 @@
         canvas.removeEventListener('touchstart', onTouchStart);
         canvas.removeEventListener('touchmove',  onTouchMove);
         canvas.removeEventListener('touchend',   stopDrawing);
+        
+        // Remove listeners from plain canvas too
+        if (plainCanvas) {
+            plainCanvas.removeEventListener('mousedown', onMouseDown);
+            plainCanvas.removeEventListener('mousemove', onMouseMove);
+            plainCanvas.removeEventListener('mouseup',   stopDrawing);
+            plainCanvas.removeEventListener('mouseout',    stopDrawing);
+            plainCanvas.removeEventListener('touchstart', onTouchStart);
+            plainCanvas.removeEventListener('touchmove',  onTouchMove);
+            plainCanvas.removeEventListener('touchend',   stopDrawing);
+        }
     }
 
     function onMouseDown(e) {
@@ -523,7 +679,87 @@
 
     function clearCanvas() {
         pushUndo();
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (isPlainCanvasMode && plainCtx) {
+            plainCtx.fillStyle = plainCanvasBgColor;
+            plainCtx.fillRect(0, 0, plainCanvas.width, plainCanvas.height);
+        } else {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+    }
+
+    // ============================================================
+    // PLAIN CANVAS MODE
+    // ============================================================
+    function togglePlainCanvasMode() {
+        isPlainCanvasMode = !isPlainCanvasMode;
+        plainCanvasBtn.classList.toggle('active', isPlainCanvasMode);
+        
+        if (isPlainCanvasMode) {
+            // Switch to plain canvas
+            videoContainer.classList.add('hidden');
+            plainCanvasContainer.classList.remove('hidden');
+            bgColorGroup.style.display = 'flex';
+            bgColorDivider.style.display = 'block';
+            
+            // Set up plain canvas
+            resizePlainCanvas();
+            plainCtx.fillStyle = plainCanvasBgColor;
+            plainCtx.fillRect(0, 0, plainCanvas.width, plainCanvas.height);
+            
+            // Update active context
+            activeCtx = plainCtx;
+            activeCanvas = plainCanvas;
+            window.drawingCtx = plainCtx;
+            
+            // Copy existing drawing if any
+            if (ctx && canvas.width > 0 && canvas.height > 0) {
+                plainCtx.drawImage(canvas, 0, 0);
+            }
+        } else {
+            // Switch back to video mode
+            plainCanvasContainer.classList.add('hidden');
+            videoContainer.classList.remove('hidden');
+            bgColorGroup.style.display = 'none';
+            bgColorDivider.style.display = 'none';
+            
+            // Update active context
+            activeCtx = ctx;
+            activeCanvas = canvas;
+            window.drawingCtx = ctx;
+        }
+        
+        console.log('Plain canvas mode:', isPlainCanvasMode);
+    }
+
+    function resizePlainCanvas() {
+        if (!plainCanvas) return;
+        const container = plainCanvasContainer;
+        const w = Math.round(container.clientWidth);
+        const h = Math.round(container.clientHeight);
+        if (w === 0 || h === 0) return;
+        plainCanvas.width = w;
+        plainCanvas.height = h;
+        console.log('Plain canvas resized to:', w, 'x', h);
+    }
+
+    function updatePlainCanvasBgColor(color) {
+        plainCanvasBgColor = color;
+        if (bgColorPreview) bgColorPreview.style.backgroundColor = color;
+        if (isPlainCanvasMode && plainCtx) {
+            // Save current content
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = plainCanvas.width;
+            tempCanvas.height = plainCanvas.height;
+            tempCtx.drawImage(plainCanvas, 0, 0);
+            
+            // Fill with new background
+            plainCtx.fillStyle = color;
+            plainCtx.fillRect(0, 0, plainCanvas.width, plainCanvas.height);
+            
+            // Restore content (this will blend, but it's the best we can do)
+            plainCtx.drawImage(tempCanvas, 0, 0);
+        }
     }
 
     // ============================================================
@@ -533,11 +769,18 @@
         const tempCanvas = document.createElement('canvas');
         const tempCtx    = tempCanvas.getContext('2d');
 
-        tempCanvas.width  = canvas.width;
-        tempCanvas.height = canvas.height;
-
-        tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
-        tempCtx.drawImage(canvas, 0, 0);
+        if (isPlainCanvasMode && plainCanvas) {
+            // Save plain canvas directly
+            tempCanvas.width  = plainCanvas.width;
+            tempCanvas.height = plainCanvas.height;
+            tempCtx.drawImage(plainCanvas, 0, 0);
+        } else {
+            // Save video + drawing overlay
+            tempCanvas.width  = canvas.width;
+            tempCanvas.height = canvas.height;
+            tempCtx.drawImage(video, 0, 0, tempCanvas.width, tempCanvas.height);
+            tempCtx.drawImage(canvas, 0, 0);
+        }
 
         const link = document.createElement('a');
         link.download = 'live-drawing-' +
@@ -593,6 +836,19 @@
     clearBtn.addEventListener('click', clearCanvas);
     saveBtn.addEventListener('click', saveDrawing);
     fullscreenBtn.addEventListener('click', toggleFullscreen);
+    if (smoothingBtn) smoothingBtn.addEventListener('click', toggleSmoothing);
+    
+    // Plain canvas mode toggle
+    if (plainCanvasBtn) {
+        plainCanvasBtn.addEventListener('click', togglePlainCanvasMode);
+    }
+    
+    // Background color picker
+    if (bgColorPicker) {
+        bgColorPicker.addEventListener('input', (e) => {
+            updatePlainCanvasBgColor(e.target.value);
+        });
+    }
 
     // Responsive resize
     window.addEventListener('resize', () => {
@@ -607,6 +863,7 @@
 
         resizeCanvas();
         if (canvas.width === 0 || canvas.height === 0) return;
+        // Draw saved content (which includes black background)
         ctx.drawImage(tempCanvas, 0, 0, canvas.width, canvas.height);
     });
 
@@ -618,6 +875,10 @@
             toggleEraser();
         } else if (e.key === 'h' || e.key === 'H') {
             toggleHandMode();
+        } else if (e.key === 'm' || e.key === 'M') {
+            toggleSmoothing();
+        } else if (e.key === 'p' || e.key === 'P') {
+            if (multiplayerPanel) multiplayerPanel.classList.toggle('hidden');
         } else if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
             e.preventDefault();
             undo();
@@ -627,6 +888,8 @@
             saveDrawing();
         } else if (e.key === 'f' || e.key === 'F') {
             toggleFullscreen();
+        } else if (e.key === 'v' || e.key === 'V') {
+            togglePlainCanvasMode();
         }
     });
 

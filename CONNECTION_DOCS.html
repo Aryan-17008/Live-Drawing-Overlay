@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Live Drawing Overlay - Connection Documentation</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; line-height: 1.6; }
+        h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+        h2 { color: #34495e; margin-top: 30px; border-left: 4px solid #3498db; padding-left: 15px; }
+        h3 { color: #7f8c8d; }
+        code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+        pre { background: #f8f9fa; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background: #3498db; color: white; }
+        tr:nth-child(even) { background: #f2f2f2; }
+        .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 15px 0; }
+        .info { background: #d1ecf1; border-left: 4px solid #17a2b8; padding: 15px; margin: 15px 0; }
+    </style>
+</head>
+<body>
+<h1>Live Drawing Overlay - Peer Connection Documentation</h1>
+
+<h2>Overview</h2>
+
+<p>This document explains how two laptops connect and share drawing/video in real-time using WebRTC and WebSocket signaling.</p>
+
+<hr>
+
+<h2>Architecture</h2>
+
+<pre><code>
+Laptop A (Host)                          Laptop B (Peer)
+┌─────────────────┐                       ┌─────────────────┐
+│  Browser        │                       │  Browser        │
+│  ├─ WebRTC      │◄──────P2P──────►────│  ├─ WebRTC      │
+│  ├─ Canvas      │    (Video + Data)     │  ├─ Canvas      │
+│  └─ WebSocket   │                       │  └─ WebSocket   │
+│       Client    │                       │       Client    │
+└────────┬────────┘                       └────────┬────────┘
+         │                                          │
+         └──────────────┬───────────────────────────┘
+                        │
+              ┌─────────┴─────────┐
+              │  Node.js Server     │
+              │  ├─ HTTP (port 3000)│
+              │  └─ WebSocket       │
+              │     (port 3000)     │
+              └─────────────────────┘
+                     (Laptop A)
+</pre>
+
+<hr>
+
+<h2>Connection Flow</h2>
+
+<h3>1. Initial Setup</h3>
+
+<p><strong>Host (Laptop A):</strong></p>
+<p>1. Runs Node.js server on WSL</p>
+<p>2. Windows forwards port 3000 to WSL via <code>netsh portproxy</code></p>
+<p>3. Windows firewall allows port 3000 inbound</p>
+
+<p><strong>Peer (Laptop B):</strong></p>
+<p>1. Opens browser to <code>http://<Host-IP>:3000</code></p>
+<p>2. Chrome flag enabled: <code>unsafely-treat-insecure-origin-as-secure</code> (for camera access on HTTP)</p>
+
+<h3>2. Signaling Phase (WebSocket)</h3>
+
+<pre><code>
+Laptop A                  Server                  Laptop B
+   │    "join room: ABC"    │                         │
+   │───────────────────────►│                         │
+   │                        │  "peer joined: B"       │
+   │◄──────────────────────│◄────────────────────────│
+   │    "offer (SDP)"       │                         │
+   │───────────────────────►│    "forward offer"      │
+   │                        │────────────────────────►│
+   │                        │    "answer (SDP)"       │
+   │◄──────────────────────│◄────────────────────────│
+   │    "ICE candidate"     │                         │
+   │───────────────────────►│    "forward ICE"        │
+   │                        │────────────────────────►│
+</pre>
+
+<h3>3. WebRTC Handshake</h3>
+
+<p><strong>Initiator Selection:</strong></p>
+<p>- Peer with **lower peerId** initiates the connection</p>
+<p>- Prevents both peers from sending offers simultaneously</p>
+
+<p><strong>State Machine:</strong></p>
+<pre><code>
+Peer A (Initiator)              Peer B (Receiver)
+     │                                 │
+     │── create offer ──►              │
+     │   setLocalDescription(offer)   │
+     │   send offer via WS             │
+     │──────────────────────────────►  │
+     │                                 │── setRemoteDescription(offer)
+     │                                 │── create answer
+     │                                 │── setLocalDescription(answer)
+     │                                 │── send answer via WS
+     │◄──────────────────────────────│
+     │── setRemoteDescription(answer)  │
+     │                                 │
+     │── ICE candidate exchange ───►  │
+     │◄───────────────────────────────│
+     │                                 │
+     │◄────── P2P connected ────────►  │
+</pre>
+
+<h3>4. NAT Traversal (ICE)</h3>
+
+<p><strong>ICE Candidate Types:</strong></p>
+
+<table>
+<tr><td>Type</td><td>Description</td><td>Example</td></tr>
+<p>|------|-------------|---------|</p>
+<table>
+<tr><td>**host**</td><td>Direct local IP</td><td>`192.168.1.5:54321`</td></tr>
+<table>
+<tr><td>**srflx**</td><td>Public IP via STUN</td><td>`203.0.113.45:54321`</td></tr>
+<table>
+<tr><td>**relay**</td><td>TURN server relay</td><td>`turn.openrelay.metered.ca:80`</td></tr>
+
+<p><strong>STUN/TURN Servers Used:</strong></p>
+<pre><code>
+iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    }
+]
+</pre>
+
+<h3>5. Data Transfer</h3>
+
+<p><strong>Drawing Sync (DataChannel):</strong></p>
+<pre><code>
+{
+    "type": "stroke",
+    "fromX": 120,
+    "fromY": 300,
+    "toX": 125,
+    "toY": 305,
+    "color": "#00ff88",
+    "size": 5,
+    "isEraser": false,
+    "eraserSize": 20
+}
+</pre>
+
+<p><strong>Video Stream (MediaStreamTrack):</strong></p>
+<p>- Local webcam stream added via <code>pc.addTrack()</code></p>
+<p>- Remote peer receives via <code>pc.ontrack</code> event</p>
+<p>- Displayed in <code><video></code> element with <code>srcObject = remoteStream</code></p>
+
+<hr>
+
+<h2>Security Considerations</h2>
+
+<h3>Current Setup (Local Network)</h3>
+
+<table>
+<tr><td>Aspect</td><td>Status</td><td>Risk Level</td></tr>
+<p>|--------|--------|------------|</p>
+<table>
+<tr><td>Connection</td><td>HTTP (unencrypted)</td><td>Medium</td></tr>
+<table>
+<tr><td>IP Exposure</td><td>Local IP shared</td><td>Low (same WiFi only)</td></tr>
+<table>
+<tr><td>Camera Access</td><td>Chrome flag bypass</td><td>Medium</td></tr>
+<table>
+<tr><td>Firewall</td><td>Port 3000 opened</td><td>Medium</td></tr>
+<table>
+<tr><td>Authentication</td><td>None</td><td>High</td></tr>
+
+<h3>Production Recommendations</h3>
+
+<p>1. **HTTPS**: Use self-signed cert or reverse proxy (nginx/Caddy)</p>
+<p>2. **Authentication**: Room passwords or JWT tokens</p>
+<p>3. **TURN Server**: Private TURN server instead of public free ones</p>
+<p>4. **No IP Sharing**: Use tunneling (ngrok/Cloudflare) or VPN mesh (Tailscale)</p>
+
+<hr>
+
+<h2>Technologies Used</h2>
+
+<table>
+<tr><td>Layer</td><td>Technology</td><td>Purpose</td></tr>
+<p>|-------|-----------|---------|</p>
+<table>
+<tr><td>Frontend</td><td>Vanilla HTML/CSS/JS</td><td>UI and drawing canvas</td></tr>
+<table>
+<tr><td>Backend</td><td>Node.js + `ws` library</td><td>HTTP server + WebSocket signaling</td></tr>
+<table>
+<tr><td>Real-time</td><td>WebRTC</td><td>P2P video and data channels</td></tr>
+<table>
+<tr><td>Hand Tracking</td><td>MediaPipe Hands</td><td>Gesture-based drawing control</td></tr>
+<table>
+<tr><td>NAT Traversal</td><td>STUN/TURN</td><td>P2P connection across NATs</td></tr>
+
+<hr>
+
+<h2>Key Files</h2>
+
+<table>
+<tr><td>File</td><td>Purpose</td></tr>
+<p>|------|---------|</p>
+<table>
+<tr><td>`server.js`</td><td>Node.js HTTP + WebSocket server</td></tr>
+<table>
+<tr><td>`multiplayer.js`</td><td>WebRTC peer connection, signaling, video handling</td></tr>
+<table>
+<tr><td>`script.js`</td><td>Drawing logic, canvas management, hand tracking</td></tr>
+<table>
+<tr><td>`index.html`</td><td>UI structure</td></tr>
+<table>
+<tr><td>`style.css`</td><td>Styling and layout</td></tr>
+
+<hr>
+
+<h2>Troubleshooting</h2>
+
+<table>
+<tr><td>Issue</td><td>Cause</td><td>Solution</td></tr>
+<p>|-------|-------|----------|</p>
+<table>
+<tr><td>"Site cannot be reached"</td><td>Windows firewall or wrong IP</td><td>Check `ipconfig`, verify port proxy, add firewall rule</td></tr>
+<table>
+<tr><td>Camera not accessible</td><td>Chrome blocks HTTP camera</td><td>Enable `unsafely-treat-insecure-origin-as-secure` flag</td></tr>
+<table>
+<tr><td>Drawing not syncing</td><td>Data channel not open</td><td>Check console for "Data channel opened" message</td></tr>
+<table>
+<tr><td>Video not showing</td><td>ICE connection failed</td><td>Check STUN/TURN server connectivity</td></tr>
+<table>
+<tr><td>Black eraser marks</td><td>Wrong composite operation</td><td>Verify `destination-out` is set correctly</td></tr>
+
+<hr>
+
+<h2>Limitations</h2>
+
+<p>1. **Same network required** for local IP approach</p>
+<p>2. **No encryption** on HTTP connections</p>
+<p>3. **Manual setup** needed (Chrome flags, firewall rules)</p>
+<p>4. **No persistence** — drawings lost on refresh</p>
+<p>5. **Single room** per server instance (no room isolation)</p>
+
+<hr>
+
+<p>*Document Version: 1.0*</p>
+<p>*Last Updated: 2026-06-25*</p>
+
+</body>
+</html>
